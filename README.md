@@ -1,3 +1,5 @@
+# Disclaimer: This is a fork from the original repository where I've added MDVRP support. I am not affiliated with the authors in any way!
+
 # Attention, Learn to Solve Routing Problems!
 
 Attention based model for learning to solve the Travelling Salesman Problem (TSP) and the Vehicle Routing Problem (VRP), Orienteering Problem (OP) and (Stochastic) Prize Collecting TSP (PCTSP). Training with REINFORCE with greedy rollout baseline.
