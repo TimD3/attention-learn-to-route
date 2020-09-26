@@ -17,6 +17,7 @@ from nets.pointer_network import PointerNetwork, CriticNetworkLSTM
 from utils import torch_load_cpu, load_problem
 
 
+
 def run(opts):
 
     # Pretty print the run args

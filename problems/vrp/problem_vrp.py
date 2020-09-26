@@ -5,6 +5,7 @@ import pickle
 
 from problems.vrp.state_cvrp import StateCVRP
 from problems.vrp.state_sdvrp import StateSDVRP
+from problems.vrp.state_mdvrp import StateMDVRP
 from utils.beam_search import beam_search
 
 
@@ -150,6 +151,80 @@ class SDVRP(object):
 
         return beam_search(state, beam_size, propose_expansions)
 
+class MDVRP(object):
+
+    NAME = 'mdvrp'  # Capacitated Vehicle Routing Problem
+
+    VEHICLE_CAPACITY = 1.0  # (w.l.o.g. vehicle capacity is 1, demands should be scaled)
+    
+    def __init__(self):
+        self.costs = None
+    
+    def set_costs(self, costs):
+        self.costs = costs
+
+    def get_costs(self, dataset, pi):
+        batch_size, graph_size = dataset['demand'].size()
+        num_depots = dataset['depot'].size(1)
+        # Check that tours are valid, i.e. contain 0 to n -1
+        sorted_pi = pi.data.sort(1)[0]
+
+        # Sorting it should give all zeros at front and then 1...n
+        assert (
+            torch.arange(num_depots, graph_size + num_depots, out=pi.data.new()).view(1, -1).expand(batch_size, graph_size) ==
+            sorted_pi[:, -graph_size:]
+        ).all() and (sorted_pi[:, :-graph_size] < num_depots).all(), "Invalid tour"
+
+        # Visiting depot resets capacity so we add demand = -capacity (we make sure it does not become negative)
+        demand_with_depot = torch.cat(
+            (
+                torch.full_like(dataset['demand'][:, :num_depots], -MDVRP.VEHICLE_CAPACITY),
+                dataset['demand']
+            ),
+            1
+        )
+        d = demand_with_depot.gather(1, pi)
+        
+        used_cap = torch.zeros_like(dataset['demand'][:, 0])
+        for i in range(pi.size(1)):
+            used_cap += d[:, i]  # This will reset/make capacity negative if i == 0, e.g. depot visited
+            # Cannot use less than 0
+            used_cap[used_cap < 0] = 0
+            assert (used_cap <= CVRP.VEHICLE_CAPACITY + 1e-5).all(), "Used more than capacity"
+        
+
+        # Gather dataset in order of tour
+        #loc_with_depot = torch.cat((dataset['depot'], dataset['loc']), 1)
+        #d = loc_with_depot.gather(1, pi[..., None].expand(*pi.size(), loc_with_depot.size(-1)))
+
+        return self.costs, None
+
+    @staticmethod
+    def make_dataset(*args, **kwargs):
+        return MDVRPDataset(*args, **kwargs)
+
+    @staticmethod
+    def make_state(*args, **kwargs):
+        return StateMDVRP.initialize(*args, **kwargs)
+
+    @staticmethod
+    def beam_search(input, beam_size, expand_size=None,
+                    compress_mask=False, model=None, max_calc_batch_size=4096):
+
+        assert model is not None, "Provide model"
+
+        fixed = model.precompute_fixed(input)
+
+        def propose_expansions(beam):
+            return model.propose_expansions(
+                beam, fixed, expand_size, normalize=True, max_calc_batch_size=max_calc_batch_size
+            )
+
+        state = MDVRP.make_state(
+            input, visited_dtype=torch.int64 if compress_mask else torch.uint8
+        )
+
+        return beam_search(state, beam_size, propose_expansions)
 
 def make_instance(args):
     depot, loc, demand, capacity, *args = args
@@ -161,7 +236,6 @@ def make_instance(args):
         'demand': torch.tensor(demand, dtype=torch.float) / capacity,
         'depot': torch.tensor(depot, dtype=torch.float) / grid_size
     }
-
 
 class VRPDataset(Dataset):
     
@@ -192,6 +266,52 @@ class VRPDataset(Dataset):
                     # Uniform 1 - 9, scaled by capacities
                     'demand': (torch.FloatTensor(size).uniform_(0, 9).int() + 1).float() / CAPACITIES[size],
                     'depot': torch.FloatTensor(2).uniform_(0, 1)
+                }
+                for i in range(num_samples)
+            ]
+
+        self.size = len(self.data)
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+class MDVRPDataset(Dataset):
+    
+    def __init__(self, filename=None, size=50, num_samples=1000000, offset=0, distribution=None):
+        super(MDVRPDataset, self).__init__()
+
+        self.data_set = []
+        if filename is not None:
+            assert os.path.splitext(filename)[1] == '.pkl'
+
+            with open(filename, 'rb') as f:
+                data = pickle.load(f)
+            self.data = [make_instance(args) for args in data[offset:offset+num_samples]]
+
+        else:
+
+            # From VRP with RL paper https://arxiv.org/abs/1802.04240
+            CAPACITIES = {
+                10: 20.,
+                20: 30.,
+                50: 40.,
+                100: 50.
+            }
+            NUM_DEPOTS = {
+                10: 2,
+                20: 2,
+                50: 4,
+                100: 4
+            }
+            self.data = [
+                {
+                    'loc': torch.FloatTensor(size, 2).uniform_(0, 1),
+                    # Uniform 1 - 9, scaled by capacities
+                    'demand': (torch.FloatTensor(size).uniform_(0, 9).int() + 1).float() / CAPACITIES[size],
+                    'depot': torch.FloatTensor(NUM_DEPOTS[size],2).uniform_(0, 1)
                 }
                 for i in range(num_samples)
             ]

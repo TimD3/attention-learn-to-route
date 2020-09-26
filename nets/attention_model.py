@@ -9,7 +9,7 @@ from nets.graph_encoder import GraphAttentionEncoder
 from torch.nn import DataParallel
 from utils.beam_search import CachedLookup
 from utils.functions import sample_many
-
+torch.autograd.set_detect_anomaly(True)
 
 def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
@@ -62,9 +62,10 @@ class AttentionModel(nn.Module):
         self.decode_type = None
         self.temp = 1.0
         self.allow_partial = problem.NAME == 'sdvrp'
-        self.is_vrp = problem.NAME == 'cvrp' or problem.NAME == 'sdvrp'
+        self.is_vrp = problem.NAME == 'cvrp' or problem.NAME == 'sdvrp' or problem.NAME == 'mdvrp'
         self.is_orienteering = problem.NAME == 'op'
         self.is_pctsp = problem.NAME == 'pctsp'
+        self.is_mdvrp = problem.NAME == 'mdvrp'
 
         self.tanh_clipping = tanh_clipping
 
@@ -91,6 +92,11 @@ class AttentionModel(nn.Module):
             
             if self.is_vrp and self.allow_partial:  # Need to include the demand if split delivery allowed
                 self.project_node_step = nn.Linear(1, 3 * embedding_dim, bias=False)
+                
+            if self.is_mdvrp:
+                # Learned input symbols for first action
+                self.W_placeholder = nn.Parameter(torch.Tensor(embedding_dim))
+                self.W_placeholder.data.uniform_(-1, 1)  # Placeholder should be in range of activations
         else:  # TSP
             assert problem.NAME == "tsp", "Unsupported problem: {}".format(problem.NAME)
             step_context_dim = 2 * embedding_dim  # Embedding of first and last node
@@ -134,9 +140,10 @@ class AttentionModel(nn.Module):
             embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
         else:
             embeddings, _ = self.embedder(self._init_embed(input))
-
+        
+        # pi is (batch size, tour length), log probas are (batch size, tour length, )
         _log_p, pi = self._inner(input, embeddings)
-
+        
         cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
         # DataParallel since sequences can be of different lengths
@@ -209,9 +216,11 @@ class AttentionModel(nn.Module):
             else:
                 assert self.is_pctsp
                 features = ('deterministic_prize', 'penalty')
-            return torch.cat(
+            
+            if self.is_mdvrp:
+                return torch.cat(
                 (
-                    self.init_embed_depot(input['depot'])[:, None, :],
+                    self.init_embed_depot(input['depot']),
                     self.init_embed(torch.cat((
                         input['loc'],
                         *(input[feat][:, :, None] for feat in features)
@@ -219,6 +228,17 @@ class AttentionModel(nn.Module):
                 ),
                 1
             )
+            else:
+                return torch.cat(
+                    (
+                        self.init_embed_depot(input['depot'])[:, None, :],
+                        self.init_embed(torch.cat((
+                            input['loc'],
+                            *(input[feat][:, :, None] for feat in features)
+                        ), -1))
+                    ),
+                    1
+                )
         # TSP
         return self.init_embed(input)
 
@@ -271,8 +291,11 @@ class AttentionModel(nn.Module):
             sequences.append(selected)
 
             i += 1
-
+            
+        if self.problem.NAME =='mdvrp':
+            self.problem.set_costs(costs=state.get_final_cost())
         # Collected lists, return Tensor
+        #print(state.get_final_cost())
         return torch.stack(outputs, 1), torch.stack(sequences, 1)
 
     def sample_many(self, input, batch_rep=1, iter_rep=1):
@@ -392,6 +415,14 @@ class AttentionModel(nn.Module):
                     -1
                 )
             else:
+                if self.is_mdvrp and state.i.item() == 0:
+                    return torch.cat(
+                    (
+                        self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1)),
+                        self.problem.VEHICLE_CAPACITY - state.used_capacity[:, :, None]
+                    ),
+                    -1
+                )
                 return torch.cat(
                     (
                         torch.gather(
