@@ -81,6 +81,8 @@ class AttentionModel(nn.Module):
         if self.is_vrp or self.is_orienteering or self.is_pctsp:
             # Embedding of last node + remaining_capacity / remaining length / remaining prize to collect
             step_context_dim = embedding_dim + 1
+            if self.is_mdvrp:
+                step_context_dim = 2*embedding_dim + 1
 
             if self.is_pctsp:
                 node_dim = 4  # x, y, expected_prize, penalty
@@ -95,7 +97,7 @@ class AttentionModel(nn.Module):
                 
             if self.is_mdvrp:
                 # Learned input symbols for first action
-                self.W_placeholder = nn.Parameter(torch.Tensor(embedding_dim))
+                self.W_placeholder = nn.Parameter(torch.Tensor(embedding_dim*2))
                 self.W_placeholder.data.uniform_(-1, 1)  # Placeholder should be in range of activations
         else:  # TSP
             assert problem.NAME == "tsp", "Unsupported problem: {}".format(problem.NAME)
@@ -421,8 +423,30 @@ class AttentionModel(nn.Module):
                         self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1)),
                         self.problem.VEHICLE_CAPACITY - state.used_capacity[:, :, None]
                     ),
-                    -1
-                )
+                    -1)
+                elif self.is_mdvrp and state.i.item() > 0:
+                    return torch.cat(
+                        (
+                            torch.gather(
+                               embeddings,
+                               1,
+                               state.cur_depot.contiguous()
+                                   .view(batch_size, num_steps, 1)
+                                   .expand(batch_size, num_steps, embeddings.size(-1))
+                           ).view(batch_size, num_steps, embeddings.size(-1)), #current depot embedding
+                            
+                            torch.gather(
+                                embeddings,
+                                1,
+                                current_node.contiguous()
+                                    .view(batch_size, num_steps, 1)
+                                    .expand(batch_size, num_steps, embeddings.size(-1))
+                            ).view(batch_size, num_steps, embeddings.size(-1)), #current node
+                            
+                            self.problem.VEHICLE_CAPACITY - state.used_capacity[:, :, None] #vehicle capacity
+                        ),
+                        -1)
+                    
                 return torch.cat(
                     (
                         torch.gather(

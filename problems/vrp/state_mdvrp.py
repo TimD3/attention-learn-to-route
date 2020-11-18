@@ -179,7 +179,7 @@ class StateMDVRP(NamedTuple):
         mask_loc = visited_loc.to(exceeds_cap.dtype) | exceeds_cap
         
         #init mask for depots
-        mask_depot = torch.ones(self.visited_[:, :, 0:self.num_depots].size(), dtype=torch.bool)
+        mask_depot = torch.ones(self.visited_[:, :, 0:self.num_depots].size(), dtype=torch.bool, device=mask_loc.device)
         if self.i > 0: #in first step cur_depot is None
             #allow vehicle to return to its depot
             mask_depot.scatter_(2, self.cur_depot[:,None,:], False)
