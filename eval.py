@@ -74,11 +74,12 @@ def eval_dataset(dataset_path, width, softmax_temp, opts):
 
     costs, tours, durations = zip(*results)  # Not really costs since they should be negative
 
-    print("Average cost: {} +- {}".format(np.mean(costs), 2 * np.std(costs) / np.sqrt(len(costs))))
+    print("Average cost: {} +- {}".format(np.mean(costs), np.std(costs)))
     print("Average serial duration: {} +- {}".format(
         np.mean(durations), 2 * np.std(durations) / np.sqrt(len(durations))))
     print("Average parallel duration: {}".format(np.mean(durations) / parallelism))
     print("Calculated total duration: {}".format(timedelta(seconds=int(np.sum(durations) / parallelism))))
+    print(tours[10])
 
     dataset_basename, ext = os.path.splitext(os.path.split(dataset_path)[-1])
     model_name = "_".join(os.path.normpath(os.path.splitext(opts.model)[0]).split(os.sep)[-2:])
@@ -160,7 +161,7 @@ def _eval_dataset(model, dataset, width, softmax_temp, opts, device):
             )
         duration = time.time() - start
         for seq, cost in zip(sequences, costs):
-            if model.problem.NAME == "tsp":
+            if model.problem.NAME in ("mdvrp", "tsp"):
                 seq = seq.tolist()  # No need to trim as all are same length
             elif model.problem.NAME in ("cvrp", "sdvrp"):
                 seq = np.trim_zeros(seq).tolist() + [0]  # Add depot
